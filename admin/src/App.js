@@ -3,6 +3,7 @@ import { NavLink, Route } from 'react-router-dom'
 import AdminPage from './components/routes/admin'
 import AuthPage from './components/routes/auth'
 import ProtectedRoute from './components/common/protected-route'
+import CustomDragLayer from './components/common/cutom-drag-layer'
 
 export default class App extends Component {
   get menu() {
@@ -11,6 +12,11 @@ export default class App extends Component {
         <div>
           <NavLink to="/admin/people" activeStyle={{ color: 'red' }}>
             People List
+          </NavLink>
+        </div>
+        <div>
+          <NavLink to="/admin/events" activeStyle={{ color: 'red' }}>
+            Events List
           </NavLink>
         </div>
         <div>
@@ -29,6 +35,7 @@ export default class App extends Component {
   render() {
     return (
       <Fragment>
+        <CustomDragLayer />
         {this.menu}
         <div>
           <ProtectedRoute path="/admin" component={AdminPage} />

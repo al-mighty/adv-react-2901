@@ -1,23 +1,46 @@
 import { appName } from '../config'
-import { Record, List } from 'immutable'
+import { Record, OrderedMap } from 'immutable'
+import {
+  put,
+  call,
+  all,
+  takeEvery,
+  fork,
+  delay,
+  cancel,
+  cancelled,
+  spawn,
+  take,
+  race
+} from 'redux-saga/effects'
+import { eventChannel } from 'redux-saga'
 import { reset } from 'redux-form'
 import { createSelector } from 'reselect'
-import { takeEvery, put, call } from 'redux-saga/effects'
-import { generateId } from './utils'
+import { fbToEntities } from '../services/util'
+import api from '../services/api'
 
 /**
  * Constants
  * */
 export const moduleName = 'people'
 const prefix = `${appName}/${moduleName}`
-export const ADD_PERSON = `${prefix}/ADD_PERSON`
 export const ADD_PERSON_REQUEST = `${prefix}/ADD_PERSON_REQUEST`
+export const ADD_PERSON_START = `${prefix}/ADD_PERSON_START`
+export const ADD_PERSON_SUCCESS = `${prefix}/ADD_PERSON_SUCCESS`
+
+export const FETCH_ALL_REQUEST = `${prefix}/FETCH_ALL_REQUEST`
+export const FETCH_ALL_SUCCESS = `${prefix}/FETCH_ALL_SUCCESS`
+
+export const UPDATE = `${prefix}/UPDATE`
+
+export const DELETE_PERSON_REQUEST = `${prefix}/DELETE_PERSON_REQUEST`
+export const DELETE_PERSON_SUCCESS = `${prefix}/DELETE_PERSON_SUCCESS`
 
 /**
  * Reducer
  * */
 const ReducerState = Record({
-  entities: new List([])
+  entities: new OrderedMap({})
 })
 
 const PersonRecord = Record({
@@ -31,10 +54,12 @@ export default function reducer(state = new ReducerState(), action) {
   const { type, payload } = action
 
   switch (type) {
-    case ADD_PERSON:
-      return state.update('entities', (entities) =>
-        entities.push(new PersonRecord(payload.person))
-      )
+    case FETCH_ALL_SUCCESS:
+    case UPDATE:
+      return state.set('entities', fbToEntities(payload, PersonRecord))
+
+    case DELETE_PERSON_SUCCESS:
+      return state.deleteIn(['entities', payload.id])
 
     default:
       return state
@@ -50,48 +75,142 @@ export const peopleSelector = createSelector(
   (state) => state.entities.valueSeq().toArray()
 )
 
+const idSelector = (_, { id }) => id
+
+export const personSelector = createSelector(
+  stateSelector,
+  idSelector,
+  (state, id) => state.getIn(['entities', id])
+)
+
+export const peopleByIdsSelector = (state, ids) =>
+  ids.map((id) => stateSelector(state).getIn(['entities', id])).filter(Boolean)
+
 /**
  * Action Creators
  * */
+export const addPerson = (person) => ({
+  type: ADD_PERSON_REQUEST,
+  payload: { person }
+})
 
-export function addPerson(person) {
+export function fetchAllPeople() {
   return {
-    type: ADD_PERSON_REQUEST,
-    payload: person
+    type: FETCH_ALL_REQUEST
   }
 }
 
-/*
-export function addPerson(person) {
-  return (dispatch) => {
-    dispatch({
-      type: ADD_PERSON,
-      payload: {
-        person: { id: Date.now(), ...person }
-      }
-    })
-
-    dispatch(reset('person'))
+export function deletePerson(id) {
+  return {
+    type: DELETE_PERSON_REQUEST,
+    payload: { id }
   }
 }
-*/
 
 /**
- *  Sagas
- */
+ * Sagas
+ **/
 
 export function* addPersonSaga(action) {
-  const id = yield call(generateId)
-  const person = { ...action.payload, id }
+  yield put({
+    type: ADD_PERSON_START,
+    payload: { ...action.payload.person }
+  })
+
+  const { id } = yield call(api.addPerson, action.payload.person)
 
   yield put({
-    type: ADD_PERSON,
-    payload: { person }
+    type: ADD_PERSON_SUCCESS,
+    payload: { id, ...action.payload.person }
   })
 
   yield put(reset('person'))
 }
 
+export function* fetchAllSaga() {
+  try {
+    const data = yield call(api.loadAllPeople)
+
+    yield put({
+      type: FETCH_ALL_SUCCESS,
+      payload: data
+    })
+  } catch (_) {}
+}
+
+export function* deletePersonSaga({ payload }) {
+  try {
+    yield call(api.deletePerson, payload.id)
+
+    yield put({
+      type: DELETE_PERSON_SUCCESS,
+      payload
+    })
+  } catch (_) {}
+}
+
+export function* syncPeopleWithPolling() {
+  while (true) {
+    yield fork(fetchAllSaga)
+    yield delay(2000)
+    throw new Error('some bad error')
+  }
+  /*
+  try {
+    while (true) {
+      yield fork(fetchAllSaga)
+      yield delay(2000)
+    }
+  } finally {
+    if (yield cancelled()) {
+      console.log('---', 'saga has been cancelled')
+    }
+  }
+*/
+}
+
+export function* cancelableSyncSaga() {
+  yield race({
+    sync: syncPeopleWithPolling(),
+    timeout: delay(5000)
+    //stopBtnClick: btnClickSaga(),
+    //route: routerListenerSaga()
+  })
+  /*
+  const process = yield fork(syncPeopleWithPolling)
+  yield delay(5000)
+  yield cancel(process)
+*/
+}
+
+/*
+function* almostTakeEvery(pattern, saga) {
+  while (true) {
+    yield take(pattern)
+    yield fork(saga)
+  }
+}
+*/
+
+const createChannel = () => eventChannel((emit) => api.subscribeForPeople(emit))
+
+export function* syncPeopleSaga() {
+  const channel = yield call(createChannel)
+  while (true) {
+    const data = yield take(channel)
+
+    yield put({
+      type: UPDATE,
+      payload: data
+    })
+  }
+}
+
 export function* saga() {
-  yield takeEvery(ADD_PERSON_REQUEST, addPersonSaga)
+  yield spawn(syncPeopleSaga)
+
+  yield all([
+    takeEvery(ADD_PERSON_REQUEST, addPersonSaga),
+    takeEvery(DELETE_PERSON_REQUEST, deletePersonSaga)
+  ])
 }
